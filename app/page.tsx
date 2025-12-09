@@ -158,7 +158,6 @@ export default function Home() {
 
   async function triggerDispense(slotNum: number) {
     if (triggeringSlot !== null) {
-      // Already processing a manual trigger; wait for it to complete
       return;
     }
 
