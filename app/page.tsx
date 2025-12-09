@@ -45,8 +45,18 @@ export default function Home() {
   const [logs, setLogs] = useState<
     { timestamp: string; status: string; slot: number; details?: string }[]
   >([]);
+  const [isLoadingSchedules, setIsLoadingSchedules] = useState(true);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(true);
+  const [triggeringSlot, setTriggeringSlot] = useState<number | null>(null);
+  const [isDbConnected, setIsDbConnected] = useState<boolean | null>(null);
 
   useEffect(() => {
+    const connectedRef = ref(database, ".info/connected");
+    onValue(connectedRef, (snapshot) => {
+      const val = snapshot.val();
+      setIsDbConnected(val === true);
+    });
+
     const slotsRef = ref(database, `${DEVICE_ID}/slots`);
     onValue(slotsRef, (snapshot) => {
       const val = snapshot.val() || {};
@@ -72,6 +82,7 @@ export default function Home() {
       }
 
       setSchedules(schedulesData);
+      setIsLoadingSchedules(false);
     });
 
     const logsRef = ref(database, `${DEVICE_ID}/logs`);
@@ -88,6 +99,7 @@ export default function Home() {
       } else {
         setLogs([]);
       }
+      setIsLoadingLogs(false);
     });
   }, []);
 
@@ -99,14 +111,14 @@ export default function Home() {
       return;
     }
 
-    const hourNum = parseInt(hour);
-    const minuteNum = parseInt(minute);
+    const hourNum = parseInt(hour, 10);
+    const minuteNum = parseInt(minute, 10);
 
-    if (hourNum < 0 || hourNum > 23) {
+    if (isNaN(hourNum) || hourNum < 0 || hourNum > 23) {
       return;
     }
 
-    if (minuteNum < 0 || minuteNum > 59) {
+    if (isNaN(minuteNum) || minuteNum < 0 || minuteNum > 59) {
       return;
     }
 
@@ -145,29 +157,41 @@ export default function Home() {
   }
 
   async function triggerDispense(slotNum: number) {
+    if (triggeringSlot !== null) {
+      // Already processing a manual trigger; wait for it to complete
+      return;
+    }
+
+    setTriggeringSlot(slotNum);
+
     const slotRef = ref(database, `${DEVICE_ID}/slots/slot${slotNum}`);
 
-    const currentData = await get(slotRef);
-    const slotData = currentData.val();
+    try {
+      const currentData = await get(slotRef);
+      const slotData = currentData.val();
 
-    if (slotData && slotData.enabled) {
-      await set(slotRef, {
-        ...slotData,
-        manualTrigger: true,
-        lastUpdated: new Date()
-          .toLocaleTimeString("en-US", { hour12: false })
-          .substring(0, 5),
-      });
+      if (slotData && slotData.enabled) {
+        await set(slotRef, {
+          ...slotData,
+          manualTrigger: true,
+          status: "manual_trigger",
+          lastUpdated: new Date()
+            .toLocaleTimeString("en-US", { hour12: false })
+            .substring(0, 5),
+        });
 
-      const logRef = ref(database, `${DEVICE_ID}/logs`);
-      const newLogRef = push(logRef);
-      await set(newLogRef, {
-        timestamp: new Date().toLocaleTimeString("en-US", { hour12: false }),
-        status: "manual_trigger",
-        slot: slotNum,
-        details: "Manually triggered from dashboard",
-        date: new Date().toISOString().split("T")[0],
-      });
+        const logRef = ref(database, `${DEVICE_ID}/logs`);
+        const newLogRef = push(logRef);
+        await set(newLogRef, {
+          timestamp: new Date().toLocaleTimeString("en-US", { hour12: false }),
+          status: "manual_trigger",
+          slot: slotNum,
+          details: "Manually triggered from dashboard",
+          date: new Date().toISOString().split("T")[0],
+        });
+      }
+    } finally {
+      setTriggeringSlot(null);
     }
   }
 
@@ -235,34 +259,62 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-4 md:p-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2 flex items-center gap-3">
-            <FaPills className="text-blue-600 dark:text-blue-400" />
-            Pill Dispenser Dashboard
-          </h1>
-          <p className="text-gray-600 dark:text-gray-400">
-            Device ID:{" "}
-            <span className="font-mono font-semibold">{DEVICE_ID}</span>
-            <span className="ml-4">Available Slots: 1-6</span>
-          </p>
-        </div>
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 px-4 py-6 md:px-8 md:py-10 text-slate-900 dark:text-slate-50">
+      <div className="max-w-6xl mx-auto space-y-6">
+        <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h1 className="text-3xl md:text-4xl font-semibold tracking-tight flex items-center gap-2">
+              <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-900 text-slate-50 dark:bg-slate-100 dark:text-slate-900 shadow-sm">
+                <FaPills className="text-lg" />
+              </span>
+              <span className="flex flex-col gap-1">
+                <span>Pill Dispenser</span>
+                <span className="text-sm font-normal text-slate-500 dark:text-slate-400">
+                  Real-time dashboard for your smart dispenser
+                </span>
+              </span>
+            </h1>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/70 bg-white/60 px-3 py-1 text-slate-700 shadow-sm backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-300">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  isDbConnected === null
+                    ? "bg-amber-500 animate-pulse"
+                    : isDbConnected
+                    ? "bg-emerald-500"
+                    : "bg-rose-500"
+                }`}
+              />
+              {isDbConnected === null
+                ? "Connecting to database..."
+                : isDbConnected
+                ? "Connected"
+                : "Disconnected"}
+            </span>
+            <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/70 bg-white/60 px-3 py-1 font-mono text-xs text-slate-600 shadow-sm backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-400">
+              ID: {DEVICE_ID}
+            </span>
+          </div>
+        </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
-            <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-6">
+          <div className="bg-white/80 dark:bg-slate-900/70 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-6 shadow-sm backdrop-blur-sm">
+            <h2 className="text-lg font-medium text-slate-900 dark:text-slate-50 mb-5 flex items-center gap-2">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                <FaCalendarAlt className="text-sm" />
+              </span>
               Slot Configuration
             </h2>
             <form onSubmit={addSchedule} className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1.5">
                   Slot Number
                 </label>
                 <select
                   value={slot}
                   onChange={(e) => setSlot(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 bg-white text-slate-900 shadow-sm outline-none transition-colors focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-50 dark:focus:border-slate-50 dark:focus:ring-slate-50/15"
                 >
                   {[1, 2, 3, 4, 5, 6].map((num) => (
                     <option key={num} value={num}>
@@ -273,41 +325,61 @@ export default function Home() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1.5">
                   Medication Name
                 </label>
                 <input
                   type="text"
                   value={medicationName}
                   onChange={(e) => setMedicationName(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 bg-white text-slate-900 shadow-sm outline-none transition-colors focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-50 dark:focus:border-slate-50 dark:focus:ring-slate-50/15"
                   placeholder="Enter medication name"
                   required
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                <label className="block text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1.5">
                   Dispensing Time
                 </label>
                 <div className="flex items-center gap-2">
                   <input
-                    type="number"
-                    min="0"
-                    max="23"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d*"
                     value={hour}
-                    onChange={(e) => setHour(e.target.value.padStart(2, "0"))}
-                    className="w-20 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    onChange={(e) => {
+                      const raw = e.target.value.replace(/\D/g, "");
+                      if (raw.length <= 2) {
+                        setHour(raw);
+                      }
+                    }}
+                    onBlur={() => {
+                      if (hour.length === 1) {
+                        setHour(hour.padStart(2, "0"));
+                      }
+                    }}
+                    className="w-20 px-3 py-2 text-sm rounded-xl border border-slate-200 bg-white text-center text-slate-900 shadow-sm outline-none transition-colors focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-50 dark:focus:border-slate-50 dark:focus:ring-slate-50/15"
                     placeholder="HH"
                   />
-                  <span className="text-xl font-bold text-gray-500">:</span>
+                  <span className="text-lg font-medium text-slate-400">:</span>
                   <input
-                    type="number"
-                    min="0"
-                    max="59"
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d*"
                     value={minute}
-                    onChange={(e) => setMinute(e.target.value.padStart(2, "0"))}
-                    className="w-20 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    onChange={(e) => {
+                      const raw = e.target.value.replace(/\D/g, "");
+                      if (raw.length <= 2) {
+                        setMinute(raw);
+                      }
+                    }}
+                    onBlur={() => {
+                      if (minute.length === 1) {
+                        setMinute(minute.padStart(2, "0"));
+                      }
+                    }}
+                    className="w-20 px-3 py-2 text-sm rounded-xl border border-slate-200 bg-white text-center text-slate-900 shadow-sm outline-none transition-colors focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-50 dark:focus:border-slate-50 dark:focus:ring-slate-50/15"
                     placeholder="MM"
                   />
                 </div>
@@ -315,116 +387,154 @@ export default function Home() {
 
               <button
                 type="submit"
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 shadow-md hover:shadow-lg flex items-center justify-center gap-2"
+                className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-slate-900 px-4 py-2.5 text-sm font-medium text-slate-50 shadow-sm transition-all hover:-translate-y-[1px] hover:bg-slate-800 hover:shadow-md active:translate-y-0 active:shadow-sm dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-200"
               >
-                <FaSave />
-                Save Configuration
+                <FaSave className="text-xs" />
+                <span>Save configuration</span>
               </button>
             </form>
           </div>
 
-          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
+          <div className="bg-white/80 dark:bg-slate-900/70 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-6 shadow-sm backdrop-blur-sm">
             <div className="flex justify-between items-center mb-6">
-              <h2 className="text-2xl font-semibold text-gray-900 dark:text-white">
-                Active Schedules
+              <h2 className="text-lg font-medium text-slate-900 dark:text-slate-50 flex items-center gap-2">
+                <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                  <FaCalendarAlt className="text-sm" />
+                </span>
+                <span>Active schedules</span>
               </h2>
-              <span className="px-3 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full text-sm font-medium">
-                {scheduleEntries.length} active
+              <span className="px-3 py-1 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-full text-xs font-medium">
+                Active: {scheduleEntries.length}
               </span>
             </div>
 
-            {scheduleEntries.length === 0 ? (
-              <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-                <FaCalendarAlt className="text-5xl mx-auto mb-4 text-gray-400" />
-                <p className="font-medium">No active schedules</p>
-                <p className="text-sm mt-1">Configure a slot to get started</p>
+            {isLoadingSchedules ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between rounded-xl border border-dashed border-slate-200/80 bg-slate-50/80 p-4 dark:border-slate-800/80 dark:bg-slate-900/40"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className="h-12 w-12 rounded-xl bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                      <div className="space-y-2">
+                        <div className="h-3 w-32 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                        <div className="flex gap-2">
+                          <div className="h-3 w-20 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                          <div className="h-3 w-16 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <div className="h-8 w-8 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                      <div className="h-8 w-8 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : scheduleEntries.length === 0 ? (
+              <div className="text-center py-10 text-slate-500 dark:text-slate-400">
+                <FaCalendarAlt className="text-4xl mx-auto mb-3 text-slate-300 dark:text-slate-600" />
+                <p className="font-medium text-sm">No active schedules yet</p>
+                <p className="text-xs mt-1">
+                  Configure a slot on the left to create your first schedule.
+                </p>
               </div>
             ) : (
-              <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+              <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
                 {scheduleEntries.map(([time, schedule]) => (
                   <div
                     key={`${schedule.slot}-${time}`}
-                    className={`p-4 rounded-lg transition-colors ${
+                    className={`p-4 rounded-xl border text-sm transition-colors ${
                       schedule.status === "in_progress"
-                        ? "bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800"
+                        ? "border-amber-300/70 bg-amber-50/70 dark:border-amber-500/50 dark:bg-amber-950/20"
                         : schedule.status === "taken"
-                        ? "bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800"
+                        ? "border-emerald-300/70 bg-emerald-50/70 dark:border-emerald-500/50 dark:bg-emerald-950/20"
                         : schedule.status === "missed"
-                        ? "bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800"
-                        : "bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700"
+                        ? "border-rose-300/70 bg-rose-50/70 dark:border-rose-500/50 dark:bg-rose-950/20"
+                        : "border-slate-200 bg-slate-50/80 hover:bg-white dark:border-slate-700 dark:bg-slate-900/40 dark:hover:bg-slate-900/70"
                     }`}
                   >
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-4">
                       <div className="flex items-center gap-4">
                         <div
-                          className={`w-14 h-14 rounded-lg flex flex-col items-center justify-center ${
+                          className={`w-14 h-14 rounded-xl flex flex-col items-center justify-center text-xs font-medium ${
                             schedule.status === "in_progress"
-                              ? "bg-yellow-100 dark:bg-yellow-900/30"
+                              ? "bg-amber-100 text-amber-900 dark:bg-amber-900/50 dark:text-amber-100"
                               : schedule.status === "taken"
-                              ? "bg-green-100 dark:bg-green-900/30"
+                              ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/50 dark:text-emerald-100"
                               : schedule.status === "missed"
-                              ? "bg-red-100 dark:bg-red-900/30"
-                              : "bg-blue-100 dark:bg-blue-900/30"
+                              ? "bg-rose-100 text-rose-900 dark:bg-rose-900/50 dark:text-rose-100"
+                              : "bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-slate-100"
                           }`}
                         >
-                          <span className="text-lg font-bold">
+                          <span className="text-base font-semibold">
                             #{schedule.slot}
                           </span>
-                          <span className="text-xs">{time}</span>
+                          <span className="mt-0.5 opacity-80">{time}</span>
                         </div>
                         <div>
-                          <div className="font-semibold text-gray-900 dark:text-white">
+                          <div className="font-medium text-slate-900 dark:text-slate-50">
                             {schedule.medicationName || `Slot ${schedule.slot}`}
                           </div>
-                          <div className="text-sm text-gray-500 dark:text-gray-400 flex items-center gap-2 mt-1">
+                          <div className="mt-1 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                             <span
-                              className={`px-2 py-1 rounded-full text-xs font-medium ${
+                              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
                                 schedule.status === "in_progress"
-                                  ? "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-300"
+                                  ? "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100"
                                   : schedule.status === "taken"
-                                  ? "bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300"
+                                  ? "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100"
                                   : schedule.status === "missed"
-                                  ? "bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300"
-                                  : "bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-300"
+                                  ? "bg-rose-100 text-rose-900 dark:bg-rose-900/40 dark:text-rose-100"
+                                  : "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200"
                               }`}
                             >
                               {schedule.status || "pending"}
                             </span>
-                            <span>•</span>
-                            <span className="flex items-center gap-1">
-                              <FaClock className="text-xs" />
+                            <span className="h-1 w-1 rounded-full bg-slate-300 dark:bg-slate-600" />
+                            <span className="inline-flex items-center gap-1">
+                              <FaClock className="text-[10px]" />
                               {time}
                             </span>
                           </div>
                         </div>
                       </div>
 
-                      <div className="flex gap-2">
+                      <div className="flex gap-1.5">
                         {schedule.status === "pending" && (
                           <button
                             onClick={() => triggerDispense(schedule.slot)}
-                            className="p-2 text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-lg transition-colors"
+                            disabled={triggeringSlot === schedule.slot}
+                            className={`inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-900 hover:text-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-100 dark:hover:text-slate-900 ${
+                              triggeringSlot === schedule.slot
+                                ? "opacity-60 cursor-not-allowed"
+                                : ""
+                            }`}
                             title="Trigger dispensing"
                           >
-                            <FaPlay />
+                            {triggeringSlot === schedule.slot ? (
+                              <FaRocket className="text-xs animate-pulse" />
+                            ) : (
+                              <FaPlay className="text-xs" />
+                            )}
                           </button>
                         )}
                         {(schedule.status === "taken" ||
                           schedule.status === "missed") && (
                           <button
                             onClick={() => resetScheduleStatus(schedule.slot)}
-                            className="p-2 text-yellow-500 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 rounded-lg transition-colors"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-amber-600 transition-colors hover:bg-amber-100 dark:border-slate-700 dark:bg-slate-900 dark:text-amber-300 dark:hover:bg-amber-950/40"
                             title="Reset to pending"
                           >
-                            <FaRedo />
+                            <FaRedo className="text-xs" />
                           </button>
                         )}
                         <button
                           onClick={() => deleteSchedule(schedule.slot)}
-                          className="p-2 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-rose-600 transition-colors hover:bg-rose-50 dark:border-slate-700 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-rose-950/40"
                           title="Disable slot"
                         >
-                          <FaTrash />
+                          <FaTrash className="text-xs" />
                         </button>
                       </div>
                     </div>
@@ -435,70 +545,91 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="mt-6 bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
+        <div className="bg-white/80 dark:bg-slate-900/70 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-6 shadow-sm backdrop-blur-sm">
           <div className="flex justify-between items-center mb-6">
-            <h2 className="text-2xl font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+            <h2 className="text-lg font-medium text-slate-900 dark:text-slate-50 flex items-center gap-2">
               <FaClipboardList />
               Activity Logs
             </h2>
             <div className="flex gap-2">
               <button
                 onClick={clearLogs}
-                className="px-4 py-2 text-sm bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50 rounded-lg transition-colors flex items-center gap-2"
+                className="inline-flex items-center gap-2 rounded-full border border-rose-100 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700 transition-colors hover:bg-rose-100 dark:border-rose-900/40 dark:bg-rose-950/30 dark:text-rose-200 dark:hover:bg-rose-950/60"
               >
-                <FaTrash className="text-xs" />
-                Clear All
+                <FaTrash className="text-[11px]" />
+                <span>Clear all</span>
               </button>
             </div>
           </div>
 
-          {logs.length === 0 ? (
-            <div className="text-center py-12 text-gray-500 dark:text-gray-400">
-              <FaClipboardList className="text-5xl mx-auto mb-4 text-gray-400" />
-              <p className="font-medium">No activity logs</p>
-              <p className="text-sm mt-1">System activity will appear here</p>
+          {isLoadingLogs ? (
+            <div className="space-y-3">
+              {[1, 2, 3, 4].map((i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-4 rounded-xl border border-dashed border-slate-200/80 bg-slate-50/80 p-4 dark:border-slate-800/80 dark:bg-slate-900/40"
+                >
+                  <div className="h-9 w-9 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                  <div className="flex-1 space-y-2">
+                    <div className="h-3 w-40 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                    <div className="flex gap-2">
+                      <div className="h-3 w-20 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                      <div className="h-3 w-14 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                      <div className="h-3 w-24 rounded-full bg-slate-200/80 dark:bg-slate-800 animate-pulse" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : logs.length === 0 ? (
+            <div className="text-center py-10 text-slate-500 dark:text-slate-400">
+              <FaClipboardList className="text-4xl mx-auto mb-3 text-slate-300 dark:text-slate-600" />
+              <p className="font-medium text-sm">No activity logs yet</p>
+              <p className="text-xs mt-1">
+                System events will appear here as the dispenser is used.
+              </p>
             </div>
           ) : (
-            <div className="space-y-3 max-h-[400px] overflow-y-auto">
+            <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1">
               {logs.map((log, i) => (
                 <div
                   key={i}
-                  className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                  className="flex items-center gap-4 rounded-xl border border-slate-200 bg-slate-50/80 p-4 text-sm transition-colors hover:bg-white dark:border-slate-700 dark:bg-slate-900/40 dark:hover:bg-slate-900/70"
                 >
                   <div
-                    className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                    className={`w-9 h-9 rounded-full flex items-center justify-center text-xs ${
                       log.status === "taken"
-                        ? "bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400"
+                        ? "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-200"
                         : log.status === "missed"
-                        ? "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400"
+                        ? "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-200"
                         : log.status === "started" ||
                           log.status === "in_progress" ||
                           log.status === "manual_trigger"
-                        ? "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-600 dark:text-yellow-400"
-                        : "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400"
+                        ? "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-200"
+                        : "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200"
                     }`}
                   >
                     {getStatusIcon(log.status)}
                   </div>
                   <div className="flex-1">
-                    <div className="font-medium text-gray-900 dark:text-white">
+                    <div className="font-medium text-slate-900 dark:text-slate-50">
                       {getStatusText(log.status)}
                     </div>
-                    <div className="text-sm text-gray-500 dark:text-gray-400 flex flex-wrap gap-2 items-center">
-                      <span className="flex items-center gap-1">
-                        <FaClock className="text-xs" />
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <span className="inline-flex items-center gap-1">
+                        <FaClock className="text-[10px]" />
                         {log.timestamp}
                       </span>
-                      <span>•</span>
-                      <span className="flex items-center gap-1">
-                        <FaCapsules className="text-xs" />
+                      <span className="h-1 w-1 rounded-full bg-slate-300 dark:bg-slate-600" />
+                      <span className="inline-flex items-center gap-1">
+                        <FaCapsules className="text-[10px]" />
                         Slot {log.slot}
                       </span>
                       {log.details && (
                         <>
-                          <span>•</span>
-                          <span className="flex items-center gap-1">
-                            <FaFileAlt className="text-xs" />
+                          <span className="h-1 w-1 rounded-full bg-slate-300 dark:bg-slate-600" />
+                          <span className="inline-flex items-center gap-1">
+                            <FaFileAlt className="text-[10px]" />
                             {log.details}
                           </span>
                         </>
@@ -511,42 +642,36 @@ export default function Home() {
           )}
         </div>
 
-        <div className="mt-6 bg-white dark:bg-gray-800 rounded-2xl shadow-lg p-6">
-          <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-6">
+        <div className="bg-white/80 dark:bg-slate-900/70 rounded-2xl border border-slate-200/80 dark:border-slate-800 p-6 shadow-sm backdrop-blur-sm">
+          <h2 className="text-lg font-medium text-slate-900 dark:text-slate-50 mb-5">
             System Overview
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
-              <div className="text-blue-600 dark:text-blue-400 text-sm font-medium mb-1">
+            <div className="p-4 rounded-2xl bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-50 border border-slate-200/80 dark:border-slate-800">
+              <div className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1.5">
                 Total Slots
               </div>
-              <div className="text-3xl font-bold text-gray-900 dark:text-white">
-                6
-              </div>
+              <div className="text-2xl font-semibold">6</div>
             </div>
-            <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-lg">
-              <div className="text-green-600 dark:text-green-400 text-sm font-medium mb-1">
+            <div className="p-4 rounded-2xl bg-emerald-50 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100 border border-emerald-200/70 dark:border-emerald-800/70">
+              <div className="text-xs font-medium uppercase tracking-wide text-emerald-700/90 dark:text-emerald-200 mb-1.5">
                 Active Schedules
               </div>
-              <div className="text-3xl font-bold text-gray-900 dark:text-white">
-                {activeSlots.length}
-              </div>
+              <div className="text-2xl font-semibold">{activeSlots.length}</div>
             </div>
-            <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 rounded-lg">
-              <div className="text-yellow-600 dark:text-yellow-400 text-sm font-medium mb-1">
+            <div className="p-4 rounded-2xl bg-amber-50 text-amber-900 dark:bg-amber-950/40 dark:text-amber-100 border border-amber-200/70 dark:border-amber-800/70">
+              <div className="text-xs font-medium uppercase tracking-wide text-amber-700/90 dark:text-amber-200 mb-1.5">
                 Pending
               </div>
-              <div className="text-3xl font-bold text-gray-900 dark:text-white">
+              <div className="text-2xl font-semibold">
                 {activeSlots.filter((s) => s.status === "pending").length}
               </div>
             </div>
-            <div className="p-4 bg-purple-50 dark:bg-purple-900/20 rounded-lg">
-              <div className="text-purple-600 dark:text-purple-400 text-sm font-medium mb-1">
+            <div className="p-4 rounded-2xl bg-slate-900 text-slate-50 dark:bg-slate-50 dark:text-slate-900 border border-slate-900/10 dark:border-slate-200/80">
+              <div className="text-xs font-medium uppercase tracking-wide text-slate-300 dark:text-slate-600 mb-1.5">
                 Total Logs
               </div>
-              <div className="text-3xl font-bold text-gray-900 dark:text-white">
-                {logs.length}
-              </div>
+              <div className="text-2xl font-semibold">{logs.length}</div>
             </div>
           </div>
         </div>
